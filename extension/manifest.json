@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "AI Web Navigation Assistant",
+  "version": "1.0",
+
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src http://localhost:5000 https://generativelanguage.googleapis.com"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+
+        "state/stateManager.js",
+        "state/sessionManager.js",
+        "state/recoveryEngine.js",
+
+        "ai/intentParser.js",
+        "ai/websiteClassifier.js",
+        "ai/capabilityAnalyzer.js",
+        "ai/uiRoleClassifier.js",
+        "ai/formEngine.js",
+        "ai/universalFormEngine.js",
+        "ai/stepExplainer.js",
+
+        "observer/domCache.js",
+        "observer/pageObserver.js",
+
+        "guidance/elementMemory.js",
+        "guidance/fieldLock.js",
+        "guidance/elementMatcher.js",
+        "guidance/highlightEngine.js",
+
+        "planner/plannerClient.js",
+
+        "controller/executionController.js",
+
+        "ui/assistantUI.js",
+
+        "content.js"
+
+      ],
+      "css": ["styles.css"]
+    }
+  ]
+}
