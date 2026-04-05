@@ -64,6 +64,74 @@ function buildHistoryText(conversationHistory) {
   return conversationHistory.slice(-6).map(h => `${h.role === "user" ? "User" : "Norman"}: ${h.text}`).join("\n");
 }
 
+function normalizePlanAction(action = "") {
+  const normalized = String(action).toLowerCase().trim();
+
+  if (["search_select", "select", "select_option", "autocomplete", "choose_location"].includes(normalized)) {
+    return "search_select";
+  }
+  if (["click_date", "select_date", "pick_date", "pick_time", "set_time", "choose_time"].includes(normalized)) {
+    return "click_date";
+  }
+  if (["type", "input", "enter"].includes(normalized)) {
+    return "type";
+  }
+  if (["click", "tap", "press"].includes(normalized)) {
+    return "click";
+  }
+
+  return normalized || "click";
+}
+
+function normalizePlanTarget(target = "") {
+  const normalized = String(target).toLowerCase().trim();
+
+  if (["pickup", "pickup_location", "pickup point", "pickup city", "from", "origin", "source"].includes(normalized)) {
+    return "origin";
+  }
+  if (["drop", "drop_location", "drop point", "dropoff", "drop off", "to", "destination"].includes(normalized)) {
+    return "destination";
+  }
+  if (["journey_date", "travel_date", "depart_date", "departure_date", "time", "date_time", "when", "schedule"].includes(normalized)) {
+    return "date";
+  }
+  if (["return", "return_date", "inbound_date"].includes(normalized)) {
+    return "return_date";
+  }
+  if (["travellers", "travelers", "guests", "riders", "passengers", "pax"].includes(normalized)) {
+    return "passengers";
+  }
+  if (["find", "search", "book", "book_now", "continue", "submit", "see_rides"].includes(normalized)) {
+    return "search";
+  }
+
+  return normalized;
+}
+
+function normalizePlanShape(rawPlan) {
+  if (!rawPlan || typeof rawPlan !== "object") return rawPlan;
+  if (rawPlan.error === "site_mismatch") return rawPlan;
+
+  const phases = Array.isArray(rawPlan.phases)
+    ? rawPlan.phases
+    : Array.isArray(rawPlan.steps)
+      ? [{ name: rawPlan.name || "Plan", steps: rawPlan.steps }]
+      : [];
+
+  return {
+    phases: phases.map((phase, phaseIndex) => ({
+      name: phase?.name || `Phase ${phaseIndex + 1}`,
+      steps: Array.isArray(phase?.steps)
+        ? phase.steps.map(step => ({
+            action: normalizePlanAction(step?.action),
+            target: normalizePlanTarget(step?.target),
+            value: step?.value || ""
+          }))
+        : []
+    }))
+  };
+}
+
 async function callLLM(messages) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -158,11 +226,13 @@ Example outputs:
 // ----------------------------------------------------
 app.post("/plan", async (req, res) => {
   try {
-    const { goal, pageContext, conversationHistory, richSnapshot, savedFeedback } = req.body;
+    const { goal, pageContext, conversationHistory, richSnapshot, savedFeedback, siteInfo, intent } = req.body;
     if (!goal) return res.status(400).json({ error: "Missing goal" });
 
     const cleanContext = simplifyContext(pageContext);
     const historyText = buildHistoryText(conversationHistory);
+    const siteType = siteInfo?.siteType || "unknown";
+    const travelMode = intent?.entities?.travelMode || "unspecified";
 
     let snapshotText = "";
     if (richSnapshot && richSnapshot.confirmedFields && richSnapshot.confirmedFields.length > 0) {
@@ -181,9 +251,19 @@ app.post("/plan", async (req, res) => {
       feedbackText = `\nUser has previously identified these fields:\n${lines}`;
     }
 
+    const siteContextText = `
+Current website context:
+- siteType: ${siteType}
+- url: ${siteInfo?.url || "unknown"}
+- hostHint: ${siteInfo?.hostHint || "none"}
+- userTravelMode: ${travelMode}
+`;
+
     const prompt = `${historyText ? `Conversation context:\n${historyText}\n` : ""}
 User goal:
 ${goal}
+
+${siteContextText}
 
 Page elements:
 ${JSON.stringify(cleanContext)}${snapshotText}${feedbackText}
@@ -209,6 +289,16 @@ CRITICAL RULES FOR BOOKING SITES:
 - Do NOT use HTML ids, DOM selectors, or element names
 - If "Detected page fields" are listed above, use their inputType to choose the correct action
 
+TRAVEL DOMAIN RULES:
+- Match the plan to the current website type.
+- If siteType is "train_booking", plan for train journeys only. Use station-style semantics, not airports or flights.
+- If siteType is "flight_booking", plan for flights only. Use airport/city travel semantics, not trains or taxis.
+- If siteType is "ride_hailing", plan for taxi/cab rides only. Map pickup to target "origin", drop to target "destination", and time/when to target "date".
+- If siteType is "bus_booking", plan for bus booking only.
+- If siteType is "hotel_booking", plan for hotels only.
+- If the user's requested travel mode conflicts with the current siteType, return:
+{"error":"site_mismatch","message":"short friendly explanation"}
+
 Return ONLY valid JSON. No markdown. No explanation.
 
 Example for flight booking:
@@ -219,6 +309,19 @@ Example for flight booking:
       {"action": "search_select", "target": "origin", "value": "Delhi"},
       {"action": "search_select", "target": "destination", "value": "Mumbai"},
       {"action": "click_date", "target": "date", "value": "15 Apr 2026"},
+      {"action": "click", "target": "search"}
+    ]
+  }]
+}
+
+Example for taxi booking on a ride-hailing site:
+{
+  "phases": [{
+    "name": "Fill Ride Details",
+    "steps": [
+      {"action": "search_select", "target": "origin", "value": "Sarjapur"},
+      {"action": "search_select", "target": "destination", "value": "Basavanagudi"},
+      {"action": "click_date", "target": "date", "value": "12 Apr 2025 10:30 AM"},
       {"action": "click", "target": "search"}
     ]
   }]
@@ -233,6 +336,7 @@ Example for flight booking:
     let text = data.choices[0].message.content.replace(/```json/g, "").replace(/```/g, "").trim();
     let plan;
     try { plan = JSON.parse(text); } catch (err) { return res.json({ error: "Model returned invalid JSON", raw: text }); }
+    plan = normalizePlanShape(plan);
     res.json(plan);
   } catch (err) {
     console.error("SERVER ERROR:", err);
