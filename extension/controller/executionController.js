@@ -925,6 +925,8 @@ async function navigateToTargetMonth(targetDate, calContainer) {
 
     const monthNames = ["january","february","march","april","may","june",
                         "july","august","september","october","november","december"];
+    const shortMonthNames = ["jan","feb","mar","apr","may","jun",
+                             "jul","aug","sep","oct","nov","dec"];
 
     const headerSelectors = [
         '[class*="MonthLabel" i]', '[class*="month-label" i]',
@@ -954,7 +956,10 @@ async function navigateToTargetMonth(targetDate, calContainer) {
     function parseShownDate(text) {
         let shownMonthIdx = -1;
         for (let m = 0; m < 12; m++) {
-            if (text.includes(monthNames[m])) { shownMonthIdx = m; break; }
+            if (text.includes(monthNames[m]) || text.includes(shortMonthNames[m])) {
+                shownMonthIdx = m;
+                break;
+            }
         }
         if (shownMonthIdx === -1) return null;
         const yearMatch = text.match(/\b(20\d\d)\b/);
@@ -1021,6 +1026,11 @@ async function navigateToTargetMonth(targetDate, calContainer) {
         const container = calContainer || findCalendarContainer();
         const calText   = readCalendarText(container);
 
+        if (hasVisibleTargetDateCell(targetDate, container)) {
+            console.log("[NAV] target date cell already visible");
+            return true;
+        }
+
         const monthOk = calText.includes(targetMonth) || calText.includes(targetMonthShort);
         const yearOk  = calText.includes(targetYear);
         if (monthOk && yearOk) {
@@ -1029,8 +1039,12 @@ async function navigateToTargetMonth(targetDate, calContainer) {
         }
 
         const shownTs = parseShownDate(calText);
+        if (shownTs === null && hasVisibleTargetDateCell(targetDate, container)) {
+            console.log("[NAV] month header unreadable but target date cell is visible");
+            return true;
+        }
         if (shownTs === null) {
-            console.warn("[NAV] cannot parse shown month — trying next");
+            console.log("[NAV] cannot parse shown month — trying next");
             const nextBtn = findNavButton(nextSelectors, container);
             if (!nextBtn) return false;
             universalFire(nextBtn);
@@ -1041,7 +1055,7 @@ async function navigateToTargetMonth(targetDate, calContainer) {
         const goBack = targetTs < shownTs;
         const btn    = findNavButton(goBack ? prevSelectors : nextSelectors, container);
         if (!btn) {
-            console.warn("[NAV] no", goBack ? "prev" : "next", "button found");
+            console.log("[NAV] no", goBack ? "prev" : "next", "button found");
             return false;
         }
         console.log("[NAV] going", goBack ? "◀ prev" : "▶ next",
@@ -1050,7 +1064,7 @@ async function navigateToTargetMonth(targetDate, calContainer) {
         universalFire(btn);
         await sleep(450);
     }
-    console.warn("[NAV] hit max navigation attempts");
+    console.log("[NAV] hit max navigation attempts");
     return false;
 }
 
@@ -1090,6 +1104,8 @@ function findCalendarCells(container) {
         '.DayPicker-Day', '.flatpickr-day', '.pika-button', '.CalendarDay',
         '.MuiPickersDay-root',
         '.ant-picker-cell', '.ant-picker-cell-inner',
+        '[aria-label*="20"][aria-label*="day" i]',
+        'button[aria-label*="20"]',
         '[class*="bpk-calendar-date" i]',
         '[class*="CalendarDate" i]', '[class*="calendar-date" i]',
         '[class*="calendarDay" i]', '[class*="CalendarDay" i]',
@@ -1098,6 +1114,20 @@ function findCalendarCells(container) {
         'td[data-date]', 'td[data-day]', 'td.day', 'td[class*="day" i]',
         '[role="grid"] button', '[role="grid"] [tabindex]',
     ];
+
+    function resolveClickableCalendarCell(el) {
+        if (!el) return null;
+
+        const tag = el.tagName.toLowerCase();
+        if (["button", "a"].includes(tag)) return el;
+
+        const directInteractive = el.querySelector(
+            'button, a, [role="button"], [tabindex="0"], [aria-label]'
+        );
+        if (directInteractive) return directInteractive;
+
+        return el;
+    }
 
     const scope = container || document;
     const seen  = new Set();
@@ -1108,15 +1138,23 @@ function findCalendarCells(container) {
             const found = [...scope.querySelectorAll(sel)];
             if (!found.length) continue;
             found.forEach(el => {
-                if (!seen.has(el) && !el.closest("#webguide-assistant")) {
-                    seen.add(el);
-                    cells.push(el);
+                const resolved = resolveClickableCalendarCell(el);
+                if (!resolved) return;
+                if (!seen.has(resolved) && !resolved.closest("#webguide-assistant")) {
+                    const rect = resolved.getBoundingClientRect();
+                    if (rect.width < 8 || rect.height < 8) return;
+                    seen.add(resolved);
+                    cells.push(resolved);
                 }
             });
-            if (cells.length > 5) break;
         } catch(e) {}
     }
     return cells;
+}
+
+function hasVisibleTargetDateCell(targetDate, container) {
+    const cells = findCalendarCells(container);
+    return cells.some(cell => !isCellDisabled(cell) && cellMatchesDate(cell, targetDate));
 }
 
 // ─── IS CELL DISABLED ────────────────────────────────────────────────────────
@@ -1177,19 +1215,17 @@ function cellMatchesDate(cell, targetDate) {
     const targetYear       = targetDate.getFullYear().toString();
     const targetMonthNum   = (targetDate.getMonth() + 1).toString().padStart(2, "0");
 
-    const rawText   = (cell.innerText || cell.textContent || "").trim().replace(/\s+/g, " ");
-    const numTokens = rawText.match(/\b\d{1,2}\b/g);
-    if (!numTokens) return false;
-
-    const dayMatches = numTokens.some(t => t.replace(/^0/,"") === targetDay);
-    if (!dayMatches) return false;
-
     const ariaLabel = (cell.getAttribute("aria-label") || "").toLowerCase();
     const dataDate  = (cell.getAttribute("data-date")  || "").toLowerCase();
     const titleAttr = (cell.getAttribute("title")      || "").toLowerCase();
     const dataDay   = (cell.getAttribute("data-day")   || "").toLowerCase();
-    const combined  = `${ariaLabel} ${dataDate} ${titleAttr} ${dataDay}`;
+    const rawText   = (cell.innerText || cell.textContent || "").trim().replace(/\s+/g, " ").toLowerCase();
+    const combined  = `${rawText} ${ariaLabel} ${dataDate} ${titleAttr} ${dataDay}`;
     const hasDigitMetadata = /\d/.test(combined);
+
+    const numTokens = combined.match(/\b\d{1,4}\b/g) || [];
+    const dayMatches = numTokens.some(t => t.replace(/^0/,"") === targetDay);
+    if (!dayMatches) return false;
 
     if (hasDigitMetadata) {
         // Exact ISO data-date match
@@ -1198,12 +1234,19 @@ function cellMatchesDate(cell, targetDate) {
             return dataDate.includes(expected);
         }
 
+        if (combined.includes(`${targetDay}/${targetMonthNum}/${targetYear}`) ||
+            combined.includes(`${targetDay}-${targetMonthNum}-${targetYear}`) ||
+            combined.includes(`${targetYear}-${targetMonthNum}-${targetDay.padStart(2,"0")}`)) {
+            return true;
+        }
+
         const hasMonth =
             combined.includes(targetMonth)             ||
             combined.includes(targetMonthShort)        ||
             combined.includes(`-${targetMonthNum}-`)   ||
             combined.includes(`/${targetMonthNum}/`)   ||
             combined.includes(`${targetMonthNum}-`)    ||
+            combined.includes(`-${targetMonthNum}`)    ||
             // Ordinal: "9th", "1st", "2nd", "3rd"
             combined.includes(targetDay + "th")        ||
             combined.includes(targetDay + "st")        ||
@@ -1214,7 +1257,15 @@ function cellMatchesDate(cell, targetDate) {
         return hasMonth || hasYear;
     }
 
-    // No metadata — trust panel-ancestor check (done by caller)
+    const shortWeekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    const longWeekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+    const weekdayOk = shortWeekdays.some(d => combined.includes(d)) || longWeekdays.some(d => combined.includes(d));
+
+    if (weekdayOk && dayMatches) {
+        return true;
+    }
+
+    // No strong metadata — let the caller use month-panel validation.
     return true;
 }
 
@@ -1436,7 +1487,7 @@ async function handleClickDate(step) {
         /\d/.test(c.getAttribute("data-day")   || "")
     );
 
-    if (!navigated || !cells.length) {
+    if (!cells.length) {
         addMessage("AI", `Please select "${step.value}" in the picker, then tap Done.`);
         dateEl.style.boxShadow = "";
         if (typeof showDoneContinueButton === "function") showDoneContinueButton(() => nextStep());
@@ -1477,7 +1528,7 @@ async function handleClickDate(step) {
     dateEl.style.boxShadow = "";
 
     if (!clicked) {
-        console.warn("[CLICK DATE v2] no matching cell found — feedback");
+        console.log("[CLICK DATE v2] no matching cell found, falling back to feedback");
         await handleFeedbackLoop(step);
         return;
     }
