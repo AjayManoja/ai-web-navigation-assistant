@@ -4,6 +4,8 @@
       this.key = "agent_session";
       this.fieldMemoryKey = "norman_field_memory";
       this.session = this.load() || this.createEmpty();
+      this._currentChatId = null;
+      this._lastChatSaveSignature = "";
       // Per-session rejection blacklist — elements rejected by the user this session.
       // Stored as a Set of CSS selectors / element references.
       // Cleared on start() so each new task gets a clean slate.
@@ -49,7 +51,6 @@
       this.session.mergedGoal = goal;
       this.session.conversationHistory = prevHistory;
       this.session.status = "running";
-      this._currentChatId = null;
       // Reset per-session state
       this._rejectedElements = new Set();
       this._scoreWeights = {};
@@ -124,6 +125,8 @@
     reset() {
       localStorage.removeItem(this.key);
       this.session = this.createEmpty();
+      this._currentChatId = null;
+      this._lastChatSaveSignature = "";
 
       // ✅ FIX 5: clear all per-session state so stale memory never bleeds across tasks
       this._rejectedElements = new Set();
@@ -142,17 +145,68 @@
     // Each entry: { id, title, messages[], timestamp }
     // ============================================
 
+    _normalizeChatMessages(messages) {
+      return (messages || []).map((message) => ({
+        role: String(message?.role || ""),
+        text: String(message?.text || "").trim()
+      }));
+    }
+
+    _buildChatSignature(title, messages) {
+      const normalizedMessages = this._normalizeChatMessages(messages);
+      return JSON.stringify({
+        title: String(title || "").trim(),
+        messages: normalizedMessages
+      });
+    }
+
+    _dedupeChatHistory(history) {
+      const seenIds = new Set();
+      const seenSignatures = new Set();
+      const deduped = [];
+
+      for (const chat of history || []) {
+        if (!chat) continue;
+
+        const signature = this._buildChatSignature(chat.title || chat.goal || "", chat.messages || []);
+        if (chat.id != null) {
+          if (seenIds.has(chat.id)) continue;
+          seenIds.add(chat.id);
+        }
+
+        if (seenSignatures.has(signature)) continue;
+        seenSignatures.add(signature);
+
+        deduped.push({
+          ...chat,
+          messages: this._normalizeChatMessages(chat.messages || [])
+        });
+      }
+
+      return deduped;
+    }
+
     saveChatSession(title, messages) {
       if (!title) return;
       const chatKey = "norman_chat_history";
       chrome.storage.local.get(chatKey, (result) => {
         try {
-          let history = result[chatKey] || [];
+          let history = this._dedupeChatHistory(result[chatKey] || []);
+          const normalizedTitle = String(title).trim();
+          const normalizedMessages = this._normalizeChatMessages(messages);
+          const signature = this._buildChatSignature(normalizedTitle, normalizedMessages);
+
+          if (signature === this._lastChatSaveSignature) {
+            return;
+          }
+
           // Remove duplicate entry with same id if updating current session
           const id = this._currentChatId || Date.now();
           this._currentChatId = id;
           history = history.filter(c => c.id !== id);
-          history.unshift({ id, title, messages: messages || [], timestamp: Date.now() });
+          history.unshift({ id, title: normalizedTitle, messages: normalizedMessages, timestamp: Date.now() });
+          history = this._dedupeChatHistory(history);
+          this._lastChatSaveSignature = signature;
           // Keep only latest 5
           chrome.storage.local.set({ [chatKey]: history.slice(0, 5) });
         } catch (e) {
@@ -163,7 +217,8 @@
 
     loadChatHistory(callback) {
       chrome.storage.local.get("norman_chat_history", (result) => {
-        callback(result.norman_chat_history || []);
+        const history = this._dedupeChatHistory(result.norman_chat_history || []);
+        callback(history);
       });
     }
 
@@ -182,12 +237,14 @@
 
     clearAllChatHistory(callback) {
       chrome.storage.local.set({ norman_chat_history: [] }, () => {
+        this._lastChatSaveSignature = "";
         if (typeof callback === "function") callback();
       });
     }
 
     startNewChatSession() {
       this._currentChatId = null;
+      this._lastChatSaveSignature = "";
     }
 
     // ============================================
