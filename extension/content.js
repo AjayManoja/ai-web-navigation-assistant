@@ -2,6 +2,7 @@ console.log("AI Assistant loaded");
 
 function initializeAssistant(){
   createAssistantUI();
+  if (typeof initializeVoiceNavigation === "function") initializeVoiceNavigation();
   scanPageElements();
   if(typeof detectForms === "function") detectForms();
   if(typeof detectUniversalForms === "function") detectUniversalForms();

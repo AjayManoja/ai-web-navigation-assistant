@@ -38,6 +38,7 @@
 
         "controller/executionController.js",
 
+        "ui/voiceInput.js",
         "ui/assistantUI.js",
 
         "content.js"

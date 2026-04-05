@@ -87,7 +87,7 @@ function createAssistantUI() {
         <div class="prompt-bar">
           <button class="prompt-icon prompt-plus" id="norman-prompt-plus" title="Upload file or screenshot"></button>
           <input id="chatInput" class="prompt-input" placeholder="Ask anything" />
-          <button class="prompt-icon prompt-mic"></button>
+          <button class="prompt-icon prompt-mic" id="norman-prompt-mic" title="Start voice input"></button>
           <button class="prompt-action" id="sendBtn"></button>
         </div>
       </div>
@@ -114,6 +114,7 @@ function createAssistantUI() {
   if (historyBtn) historyBtn.addEventListener("click", () => showHistoryPanel());
 
   _setupPromptPlusButton();
+  _setupVoiceButton();
 
   setTimeout(() => { refreshKeyDot(); }, 100);
 }
@@ -123,6 +124,20 @@ function createAssistantUI() {
 // ✅ FIX: appended to document.body, no stopPropagation
 // ----------------------------------------------------
 let _pendingUpload = null;
+let _submitAssistantQuery = null;
+
+function _setupVoiceButton() {
+  const micBtn = document.getElementById("norman-prompt-mic");
+  if (!micBtn) return;
+
+  micBtn.addEventListener("click", () => {
+    if (typeof toggleVoiceNavigation === "function") {
+      toggleVoiceNavigation();
+    } else {
+      addMessage("AI", "Voice input isn't available right now.");
+    }
+  });
+}
 
 function _setupPromptPlusButton() {
   const plusBtn = document.getElementById("norman-prompt-plus");
@@ -414,10 +429,21 @@ function listenUserInput(callback) {
     const input = document.getElementById("chatInput");
     if (!input) return;
     clearInterval(waitForInput);
+    _submitAssistantQuery = (query) => {
+      if (!query || !query.trim()) return false;
+      input.value = query.trim();
+      handleSend(callback, input);
+      return true;
+    };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") handleSend(callback, input); });
     const sendBtn = document.getElementById("sendBtn");
     if (sendBtn) sendBtn.addEventListener("click", () => handleSend(callback, input));
   }, 100);
+}
+
+function submitAssistantQuery(query) {
+  if (typeof _submitAssistantQuery !== "function") return false;
+  return _submitAssistantQuery(query);
 }
 
 function handleSend(callback, input) {
@@ -472,6 +498,30 @@ function addMessage(sender, text) {
   msg.textContent = text;
   chat.appendChild(msg);
   chat.scrollTop = chat.scrollHeight;
+}
+
+function setMicButtonState(state = {}) {
+  const micBtn = document.getElementById("norman-prompt-mic");
+  if (!micBtn) return;
+
+  const supported = state.supported !== false;
+  const listening = !!state.listening;
+  const processing = !!state.processing;
+
+  micBtn.classList.toggle("voice-listening", listening);
+  micBtn.classList.toggle("voice-processing", processing);
+  micBtn.classList.toggle("voice-disabled", !supported);
+
+  if (!supported) {
+    micBtn.disabled = true;
+    micBtn.title = "Voice input is not supported in this browser";
+    return;
+  }
+
+  micBtn.disabled = false;
+  if (listening) micBtn.title = "Stop voice input";
+  else if (processing) micBtn.title = "Processing voice input";
+  else micBtn.title = "Start voice input";
 }
 
 // ----------------------------------------------------
