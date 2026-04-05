@@ -106,7 +106,9 @@ function buildSnapshotContext(){
 // PLANNER API REQUEST (updated)
 // ----------------------------------------------------
 
-async function requestPlan(goal, pageContext, conversationHistory){
+let _plannerBackendWarned = false;
+
+async function requestPlan(goal, pageContext, conversationHistory, siteInfo, intent){
     
     // 1. Build rich snapshot context (replaces old semanticContext)
     const { richSnapshot, savedFeedback } = buildSnapshotContext();
@@ -115,20 +117,41 @@ async function requestPlan(goal, pageContext, conversationHistory){
     console.log("[requestPlan] Rich Snapshot:", richSnapshot);
 
     // 3. Send to backend
-    const res = await fetch("http://localhost:5000/plan", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            goal,
-            pageContext,
-            richSnapshot,           
-            savedFeedback,          
-            conversationHistory: conversationHistory || []
-        })
-    });
+    try {
+        const res = await fetch("http://localhost:5000/plan", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                goal,
+                pageContext,
+                siteInfo: siteInfo || null,
+                intent: intent || null,
+                richSnapshot,
+                savedFeedback,
+                conversationHistory: conversationHistory || []
+            })
+        });
 
-    const plan = await res.json();
-    return plan;
+        const plan = await res.json();
+
+        if (!res.ok) {
+            return {
+                error: plan?.error || "planner_failed",
+                message: plan?.message || "Planner request failed."
+            };
+        }
+
+        return plan;
+    } catch (err) {
+        if (!_plannerBackendWarned) {
+            console.warn("[plannerClient] backend unavailable:", err);
+            _plannerBackendWarned = true;
+        }
+        return {
+            error: "backend_unreachable",
+            message: "I couldn't reach the planner server. Please make sure backend/server.js is running on port 5000."
+        };
+    }
 }

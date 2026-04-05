@@ -182,19 +182,40 @@ function explainSemanticAlias(phrase) {
   return `I understood "${phrase}" as ${typeLabels[alias.uiType] || alias.uiType} (${alias.fieldKey})`;
 }
 
+function detectTravelMode(query) {
+  const text = (query || "").toLowerCase();
+
+  if (/\b(flight|flights|airport|airline|fly)\b/.test(text)) return "flight";
+  if (/\b(train|trains|rail|railway|pnr|station)\b/.test(text)) return "train";
+  if (/\b(taxi|cab|cabs|ride|rides|ola|uber)\b/.test(text)) return "taxi";
+  if (/\b(bus|buses|coach)\b/.test(text)) return "bus";
+  if (/\b(hotel|hotels|room|rooms|stay|check in|check-in)\b/.test(text)) return "hotel";
+
+  return null;
+}
+
 function parseIntent(query) {
   query = query.toLowerCase();
 
   const intent = { taskType: "unknown", entities: {} };
+  const travelMode = detectTravelMode(query);
 
-  if (query.includes("flight") || query.includes("train") || query.includes("bus") || query.includes("ticket"))
+  if (travelMode || query.includes("ticket") || query.includes("booking") || query.includes("book")) {
     intent.taskType = "travel_booking";
-  if (query.includes("order") || query.includes("food") || query.includes("burger") || query.includes("pizza"))
+  }
+  if (query.includes("order") || query.includes("food") || query.includes("burger") || query.includes("pizza")) {
     intent.taskType = "food_order";
-  if (query.includes("buy") || query.includes("purchase") || query.includes("add to cart"))
+  }
+  if (query.includes("buy") || query.includes("purchase") || query.includes("add to cart")) {
     intent.taskType = "shopping";
-  if (query.includes("search") || query.includes("find"))
-    intent.taskType = "search";
+  }
+  if (query.includes("search") || query.includes("find")) {
+    intent.taskType = intent.taskType === "unknown" ? "search" : intent.taskType;
+  }
+
+  if (travelMode) {
+    intent.entities.travelMode = travelMode;
+  }
 
   const locationMatch = query.match(/from\s+(\w+)\s+to\s+(\w+)/);
   if (locationMatch) {
@@ -231,6 +252,7 @@ function parseIntent(query) {
 if (typeof module !== "undefined") {
   module.exports = {
     parseIntent, resolveSemanticAlias, explainSemanticAlias,
+    detectTravelMode,
     disambiguateDateFields,
     FIELD_SEMANTIC_ALIASES, SYNONYM_CLUSTERS, CLUSTER_META
   };

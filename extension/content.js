@@ -122,12 +122,17 @@ listenUserInput(async (query) => {
 
     // ✅ Step 12: Generate plan with merged goal + conversation context
     const pageContext = extractPageContext();
-    const plan = await requestPlan(mergedGoal, pageContext, conversationHistory);
+    const plan = await requestPlan(mergedGoal, pageContext, conversationHistory, siteInfo, intent);
 
     console.log("PLAN RECEIVED:", plan);
 
+    if (plan && plan.error) {
+      addMessage("AI", plan.message || "I couldn't generate a valid plan for this page.");
+      return;
+    }
+
     if (!plan || !plan.phases || !Array.isArray(plan.phases)) {
-      console.error("Invalid plan returned by LLM:", plan);
+      console.warn("Planner returned an unusable plan shape:", plan);
       addMessage("AI", "Sorry, I couldn't generate a valid plan.");
       return;
     }

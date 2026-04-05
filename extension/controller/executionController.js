@@ -1054,6 +1054,34 @@ async function navigateToTargetMonth(targetDate, calContainer) {
     return false;
 }
 
+function isSchedulePickerOpen() {
+    const selectors = [
+        '[role="listbox"]',
+        '[role="menu"]',
+        '[role="dialog"] [role="option"]',
+        '.ant-select-dropdown',
+        '.MuiPopover-root',
+        '.MuiMenu-paper',
+        '[class*="dropdown" i]',
+        '[class*="time-picker" i]',
+        '[class*="schedule" i]'
+    ];
+
+    for (const sel of selectors) {
+        try {
+            const els = [...document.querySelectorAll(sel)];
+            const visible = els.find(el => {
+                if (el.closest("#webguide-assistant")) return false;
+                const r = el.getBoundingClientRect();
+                return r.width > 30 && r.height > 30;
+            });
+            if (visible) return true;
+        } catch(e) {}
+    }
+
+    return false;
+}
+
 // ─── FIND CALENDAR CELLS ──────────────────────────────────────────────────────
 function findCalendarCells(container) {
     const cellSelectors = [
@@ -1384,7 +1412,18 @@ async function handleClickDate(step) {
         (calContainer?.className || "").toString().slice(0, 40));
 
     // ── Navigate to correct month ─────────────────────────────────────────
-    await navigateToTargetMonth(targetDate, calContainer);
+    if (!calContainer) {
+        if (isSchedulePickerOpen()) {
+            addMessage("AI", `Please choose "${step.value}" in the time picker, then tap Done.`);
+        } else {
+            addMessage("AI", `Please select "${step.value}" in the date or time picker.`);
+        }
+        dateEl.style.boxShadow = "";
+        if (typeof showDoneContinueButton === "function") showDoneContinueButton(() => nextStep());
+        return;
+    }
+
+    const navigated = await navigateToTargetMonth(targetDate, calContainer);
     await sleep(350);
 
     // ── Find and click the date cell ──────────────────────────────────────
@@ -1396,6 +1435,13 @@ async function handleClickDate(step) {
         /\d/.test(c.getAttribute("title")      || "") ||
         /\d/.test(c.getAttribute("data-day")   || "")
     );
+
+    if (!navigated || !cells.length) {
+        addMessage("AI", `Please select "${step.value}" in the picker, then tap Done.`);
+        dateEl.style.boxShadow = "";
+        if (typeof showDoneContinueButton === "function") showDoneContinueButton(() => nextStep());
+        return;
+    }
 
     let clicked = false;
     for (const cell of cells) {

@@ -2,6 +2,7 @@
 
 // Cache so we don't re-fetch same step twice
 const explanationCache = {};
+let _stepExplainerUnavailable = false;
 
 async function fetchExplanation(step) {
 
@@ -12,22 +13,31 @@ async function fetchExplanation(step) {
   }
 
   try {
-
     const response = await fetch("http://localhost:5000/explain", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ step })
     });
 
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
     const data = await response.json();
     const explanation = data.explanation || "Follow the highlighted step to continue.";
 
     explanationCache[key] = explanation;
+    _stepExplainerUnavailable = false;
     return explanation;
 
   } catch (err) {
-    console.error("[stepExplainer] fetch failed:", err);
-    return "Follow the highlighted step to continue.";
+    if (!_stepExplainerUnavailable) {
+      console.warn("[stepExplainer] backend unavailable, using fallback explanations.");
+      _stepExplainerUnavailable = true;
+    }
+    const fallback = "Follow the highlighted step to continue.";
+    explanationCache[key] = fallback;
+    return fallback;
   }
 }
 
