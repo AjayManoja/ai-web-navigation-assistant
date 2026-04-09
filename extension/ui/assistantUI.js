@@ -53,6 +53,17 @@ function createAssistantUI() {
           background:#6b5fa0;margin:0 2px;align-self:center;
           flex-shrink:0;transition:background 0.3s;
         "></span>
+        <button id="norman-voice-lang-btn" title="Voice language" style="
+          border:1px solid rgba(139,92,246,0.28);
+          background:rgba(255,255,255,0.05);
+          color:#c4b5fd;
+          border-radius:999px;
+          padding:3px 8px;
+          font-size:10px;
+          line-height:1;
+          cursor:pointer;
+          font-family:'DM Sans',sans-serif;
+        ">KN</button>
         <button class="expand-btn" id="norman-history-btn" title="Chat history / New chat" style="font-size:13px;"></button>
         <button class="close-btn">✕</button>
       </div>
@@ -115,8 +126,10 @@ function createAssistantUI() {
 
   _setupPromptPlusButton();
   _setupVoiceButton();
+  _setupVoiceLanguageButton();
 
   setTimeout(() => { refreshKeyDot(); }, 100);
+  setTimeout(() => { refreshVoiceLanguageButton(); }, 100);
 }
 
 // ----------------------------------------------------
@@ -125,6 +138,52 @@ function createAssistantUI() {
 // ----------------------------------------------------
 let _pendingUpload = null;
 let _submitAssistantQuery = null;
+
+function hasExtensionStorage() {
+  return !!(
+    typeof chrome !== "undefined" &&
+    chrome.runtime &&
+    chrome.runtime.id &&
+    chrome.storage &&
+    chrome.storage.local
+  );
+}
+
+function getVoiceLanguagePreference() {
+  try {
+    return localStorage.getItem("norman_voice_lang") || "kn-IN";
+  } catch (e) {
+    return "kn-IN";
+  }
+}
+
+function setVoiceLanguagePreference(lang) {
+  const normalized = lang === "en-IN" ? "en-IN" : "kn-IN";
+  try { localStorage.setItem("norman_voice_lang", normalized); } catch (e) {}
+  window.__normanVoiceLang = normalized;
+  refreshVoiceLanguageButton();
+}
+
+function refreshVoiceLanguageButton() {
+  const btn = document.getElementById("norman-voice-lang-btn");
+  if (!btn) return;
+  const lang = getVoiceLanguagePreference();
+  const shortLabel = lang === "en-IN" ? "EN" : "KN";
+  btn.textContent = shortLabel;
+  btn.title = lang === "en-IN" ? "Voice language: English" : "Voice language: Kannada";
+}
+
+function _setupVoiceLanguageButton() {
+  const btn = document.getElementById("norman-voice-lang-btn");
+  if (!btn) return;
+
+  window.__normanVoiceLang = getVoiceLanguagePreference();
+  btn.addEventListener("click", () => {
+    const nextLang = getVoiceLanguagePreference() === "kn-IN" ? "en-IN" : "kn-IN";
+    setVoiceLanguagePreference(nextLang);
+    addMessage("AI", nextLang === "en-IN" ? "Voice language set to English." : "Voice language set to Kannada.");
+  });
+}
 
 function _setupVoiceButton() {
   const micBtn = document.getElementById("norman-prompt-mic");
@@ -248,7 +307,7 @@ function showSettingsPanel() {
   slot.style.display = "block";
 
   // populate existing saved key
-  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+  if (hasExtensionStorage()) {
     chrome.storage.local.get("norman_gemini_key", (result) => {
       const k = result.norman_gemini_key;
       const keyInput = document.getElementById("norman-api-key-input");
@@ -275,6 +334,10 @@ function showSettingsPanel() {
       const key = keyInput.value.trim();
       if (!key.startsWith("AIza")) {
         if (statusEl) { statusEl.style.display = "block"; statusEl.style.color = "#f87171"; statusEl.textContent = "❌ Key must start with AIza..."; }
+        return;
+      }
+      if (!hasExtensionStorage()) {
+        if (statusEl) { statusEl.style.display = "block"; statusEl.style.color = "#f87171"; statusEl.textContent = "❌ Extension storage unavailable. Reload the extension."; }
         return;
       }
       chrome.storage.local.set({ norman_gemini_key: key }, () => {
@@ -413,11 +476,14 @@ function showHistoryPanel() {
 function refreshKeyDot() {
   const dot = document.getElementById("norman-key-dot");
   if (!dot) return;
-  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+  if (hasExtensionStorage()) {
     chrome.storage.local.get("norman_gemini_key", (result) => {
       dot.style.background = result.norman_gemini_key ? "#34d399" : "#6b5fa0";
       dot.title = result.norman_gemini_key ? "Gemini key active — all features on ✓" : "No Gemini key — tap ⋮ to unlock features";
     });
+  } else {
+    dot.style.background = "#6b5fa0";
+    dot.title = "Extension storage unavailable";
   }
 }
 
@@ -429,10 +495,15 @@ function listenUserInput(callback) {
     const input = document.getElementById("chatInput");
     if (!input) return;
     clearInterval(waitForInput);
-    _submitAssistantQuery = (query) => {
-      if (!query || !query.trim()) return false;
-      input.value = query.trim();
-      handleSend(callback, input);
+    _submitAssistantQuery = (payload) => {
+      const query = typeof payload === "string" ? payload : payload?.query;
+      const displayText = typeof payload === "string" ? payload : (payload?.displayText || query);
+      if (!query || !String(query).trim()) return false;
+      input.value = String(query).trim();
+      handleSend(callback, input, {
+        query: String(query).trim(),
+        displayText: String(displayText || query).trim()
+      });
       return true;
     };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") handleSend(callback, input); });
@@ -446,12 +517,13 @@ function submitAssistantQuery(query) {
   return _submitAssistantQuery(query);
 }
 
-function handleSend(callback, input) {
-  const query = input.value.trim();
+function handleSend(callback, input, options = {}) {
+  const query = options.query || input.value.trim();
+  const displayText = options.displayText || query;
   const upload = consumePendingUpload();
   if (!query && !upload) return;
   input.value = "";
-  if (query) addMessage("USER", query);
+  if (displayText) addMessage("USER", displayText);
   if (upload) addMessage("USER", `📎 Attached: ${upload.fileName}`);
   callback(query, upload); // upload passed to main controller
 }

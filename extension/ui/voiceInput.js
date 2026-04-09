@@ -6,6 +6,43 @@ let _voiceListening = false;
 let _voiceProcessing = false;
 let _voiceFinalizing = false;
 let _voiceLastTranscript = "";
+let _voiceTranslateWarned = false;
+
+async function translateVoiceTranscript(text) {
+  const transcript = String(text || "").trim();
+  if (!transcript) return transcript;
+
+  const preferredLang = window.__normanVoiceLang || "kn-IN";
+  if (preferredLang === "en-IN" && !/[\u0C80-\u0CFF]/.test(transcript)) {
+    return { translatedText: transcript, success: true };
+  }
+
+  try {
+    const res = await fetch("http://localhost:5000/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: transcript,
+        sourceLang: "auto",
+        targetLang: "en",
+        mode: "voice"
+      })
+    });
+
+    const data = await res.json();
+    _voiceTranslateWarned = false;
+    return {
+      translatedText: String(data?.translatedText || "").trim(),
+      success: Boolean(data?.success && data?.translatedText)
+    };
+  } catch (err) {
+    if (!_voiceTranslateWarned) {
+      console.warn("[voiceInput] translation unavailable.");
+      _voiceTranslateWarned = true;
+    }
+    return { translatedText: "", success: false };
+  }
+}
 
 function _getSpeechRecognitionCtor() {
   if (typeof window === "undefined") return null;
@@ -74,7 +111,7 @@ function startVoiceNavigation() {
   _voiceProcessing = false;
   _voiceFinalizing = false;
 
-  recognition.lang = "en-IN";
+  recognition.lang = window.__normanVoiceLang || "kn-IN";
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
   recognition.continuous = false;
@@ -83,7 +120,10 @@ function startVoiceNavigation() {
     _voiceListening = true;
     _voiceProcessing = false;
     _syncVoiceUi();
-    if (input) input.placeholder = "Listening...";
+    if (input) {
+      const langLabel = recognition.lang === "en-IN" ? "English" : "Kannada";
+      input.placeholder = `Listening (${langLabel})...`;
+    }
   };
 
   recognition.onresult = (event) => {
@@ -126,7 +166,7 @@ function startVoiceNavigation() {
     }
   };
 
-  recognition.onend = () => {
+  recognition.onend = async () => {
     const transcript = (_voiceLastTranscript || "").trim();
     const inputEl = document.getElementById("chatInput");
 
@@ -137,8 +177,25 @@ function startVoiceNavigation() {
       _voiceFinalizing = false;
       _syncVoiceUi();
 
+      const translation = await translateVoiceTranscript(transcript);
+      const translatedText = translation?.translatedText || "";
+
+      if (!translation?.success || /[\u0C80-\u0CFF]/.test(translatedText)) {
+        _voiceProcessing = false;
+        _syncVoiceUi();
+        if (typeof addMessage === "function") {
+          addMessage("AI", "I couldn't convert that Kannada speech into English reliably. Please try again or switch to English mode.");
+        }
+        _voiceLastTranscript = "";
+        if (inputEl) inputEl.placeholder = "Ask anything";
+        return;
+      }
+
       const submitted = typeof submitAssistantQuery === "function"
-        ? submitAssistantQuery(transcript)
+        ? submitAssistantQuery({
+            query: translatedText,
+            displayText: transcript
+          })
         : false;
 
       _voiceProcessing = false;

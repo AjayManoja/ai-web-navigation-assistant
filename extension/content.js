@@ -30,7 +30,6 @@ async function askNorman(message, conversationHistory) {
     });
     return await res.json();
   } catch(err) {
-    console.error("askNorman failed:", err);
     // fallback: treat as ready with original message
     return { type: "ready", text: "Let me plan that for you.", mergedGoal: message };
   }

@@ -1,67 +1,155 @@
-// server.js
-
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "20mb" })); // ✅ increased limit for base64 file uploads
+app.use(express.json({ limit: "20mb" }));
+
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const PORT = process.env.PORT || 5000;
 
-// ----------------------------------------------------
-// NORMAN SELF-AWARE SYSTEM PROMPT
-// Injected into every LLM call so Norman knows his capabilities
-// ----------------------------------------------------
 const NORMAN_IDENTITY = `You are Norman, a smart and friendly AI web assistant built as a Chrome extension.
 
 WHAT YOU CAN DO:
-- Fill in forms, search fields, dropdowns, and date pickers on any website
-- Click buttons and navigate pages step by step
+- Fill in forms, search fields, dropdowns, and date pickers on websites
+- Click buttons and guide users step by step
 - Remember fields across sessions for the same website
-- Read screenshots and images when the user has added a Gemini API key
-- Read uploaded documents (PDF, images) and extract data to fill forms
-- Analyse the current page and tell whether it can satisfy the user's goal
-- Suggest better websites if the current page cannot complete the task
-- Greet users by name and personalise responses
+- Read screenshots and uploaded documents when Gemini is available
+- Analyse whether the current page can satisfy the user's goal
 
 WHAT YOU CANNOT DO:
-- Access the user's OS files without them uploading first
-- Handle CAPTCHAs, login walls, or payment flows autonomously
-- Work without a Gemini API key for image/document features (text-only mode without it)
-- Take actions outside the current browser tab
+- Access local OS files unless the user uploads them
+- Handle CAPTCHAs, payment flows, or actions outside the current tab
 
 BEHAVIOUR RULES:
-- Always be warm, concise, and friendly
-- If a task is impossible on the current page, say so clearly and suggest the right website
-- Never pretend to do something you cannot do
-- If the Gemini key is not set, explain that image/doc features are locked and how to unlock them`;
+- Be warm, concise, and honest
+- If a task is impossible on the current page, say so clearly
+- Never pretend to do something you cannot do`;
 
-// ----------------------------------------------------
-// HELPERS
-// ----------------------------------------------------
 function simplifyContext(ctx) {
   if (!ctx) return {};
   return {
-    // Preserve structuralRole on each input so the planner can reason about
-    // element types (date_picker, calendar_trigger, search_select, counter)
-    // rather than just matching text labels.
-    inputs: (ctx.inputs?.slice(0, 10) || []).map(inp => ({
+    inputs: (ctx.inputs?.slice(0, 6) || []).map(inp => ({
       type: inp.type || "text",
-      placeholder: inp.placeholder || "",
-      name: inp.name || "",
-      id: inp.id || "",
+      placeholder: String(inp.placeholder || "").slice(0, 40),
+      name: String(inp.name || "").slice(0, 30),
+      id: String(inp.id || "").slice(0, 30),
       structuralRole: inp.structuralRole || "text_input"
     })),
-    buttons: ctx.buttons?.slice(0, 10) || [],
-    dropdowns: ctx.dropdowns?.slice(0, 10) || [],
-    labels: ctx.labels?.slice(0, 20) || []
+    buttons: (ctx.buttons?.slice(0, 6) || []).map(btn => ({
+      text: String(btn?.text || "").slice(0, 40)
+    })),
+    dropdowns: (ctx.dropdowns?.slice(0, 6) || []).map(drop => ({
+      id: String(drop?.id || "").slice(0, 30),
+      name: String(drop?.name || "").slice(0, 30),
+      label: String(drop?.label || "").slice(0, 40)
+    })),
+    labels: (ctx.labels?.slice(0, 12) || []).map(label => String(label || "").slice(0, 40))
   };
 }
 
 function buildHistoryText(conversationHistory) {
-  if (!conversationHistory || conversationHistory.length === 0) return "";
-  return conversationHistory.slice(-6).map(h => `${h.role === "user" ? "User" : "Norman"}: ${h.text}`).join("\n");
+  if (!conversationHistory?.length) return "";
+  return conversationHistory
+    .slice(-3)
+    .map(h => `${h.role === "user" ? "User" : "Norman"}: ${String(h.text || "").slice(0, 120)}`)
+    .join("\n");
+}
+
+function stripMarkdownFences(text = "") {
+  return String(text)
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+}
+
+function extractFirstJsonObject(text = "") {
+  const cleanText = stripMarkdownFences(text);
+  const start = cleanText.indexOf("{");
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < cleanText.length; i++) {
+    const char = cleanText[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (char === "{") depth++;
+    if (char === "}") {
+      depth--;
+      if (depth === 0) return cleanText.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function parseModelJson(text = "") {
+  const direct = stripMarkdownFences(text);
+  try {
+    return JSON.parse(direct);
+  } catch {}
+
+  const extracted = extractFirstJsonObject(text);
+  if (!extracted) throw new Error("No JSON object found in model response");
+  return JSON.parse(extracted);
+}
+
+function extractRetryDelay(message = "") {
+  const match = String(message).match(/Please try again in ([^.]*)/i);
+  return match ? match[1].trim() : null;
+}
+
+function countMatches(text = "", regex) {
+  const matches = String(text).match(regex);
+  return matches ? matches.length : 0;
+}
+
+function detectInputLanguage(text = "") {
+  const cleanText = String(text || "").trim();
+  const kannadaChars = countMatches(cleanText, /[\u0C80-\u0CFF]/g);
+  const latinChars = countMatches(cleanText, /[A-Za-z]/g);
+
+  if (kannadaChars > 0 && latinChars === 0) return "kn";
+  if (latinChars > 0 && kannadaChars === 0) return "en";
+  if (kannadaChars > 0 && latinChars > 0) return "mixed";
+  return "unknown";
+}
+
+function containsKannada(text = "") {
+  return /[\u0C80-\u0CFF]/.test(String(text || ""));
+}
+
+function cleanTranslatedText(text = "") {
+  return String(text || "")
+    .replace(/^translation\s*:\s*/i, "")
+    .replace(/^english\s*:\s*/i, "")
+    .trim();
+}
+
+function translationLooksUsable(originalText = "", translatedText = "") {
+  const original = String(originalText || "").trim();
+  const translated = cleanTranslatedText(translatedText);
+  if (!translated) return false;
+  if (containsKannada(translated)) return false;
+  if (translated === original && containsKannada(original)) return false;
+  return true;
 }
 
 function normalizePlanAction(action = "") {
@@ -132,29 +220,72 @@ function normalizePlanShape(rawPlan) {
   };
 }
 
-async function callLLM(messages) {
+async function callLLM(messages, { temperature = 0, maxTokens } = {}) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
+
       const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_API_KEY}` },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${GROQ_API_KEY}`
+        },
         signal: controller.signal,
-        body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages, temperature: 0 })
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          messages,
+          temperature,
+          ...(typeof maxTokens === "number" ? { max_tokens: maxTokens } : {})
+        })
       });
+
       clearTimeout(timeout);
-      return await response.json();
-    } catch (err) { console.log("LLM CALL FAILED (retrying):", err); }
+      const data = await response.json();
+
+      if (!response.ok) {
+        if (response.status === 429) {
+          const retryDelay = extractRetryDelay(data?.error?.message);
+          console.warn("[GROQ RATE LIMITED]", {
+            attempt: attempt + 1,
+            retryDelay,
+            error: data?.error || data
+          });
+          return {
+            rateLimited: true,
+            retryDelay,
+            userMessage: retryDelay
+              ? `Groq rate limit reached. Please try again in about ${retryDelay}.`
+              : "Groq rate limit reached. Please try again shortly."
+          };
+        }
+
+        console.error("[GROQ ERROR]", {
+          status: response.status,
+          statusText: response.statusText,
+          attempt: attempt + 1,
+          error: data?.error || data
+        });
+        throw new Error(`Groq HTTP ${response.status}`);
+      }
+
+      if (!data?.choices?.[0]?.message?.content) {
+        console.warn("[GROQ EMPTY/UNEXPECTED RESPONSE]", JSON.stringify(data, null, 2));
+      }
+
+      return data;
+    } catch (err) {
+      console.log("LLM CALL FAILED (retrying):", err);
+    }
   }
+
   throw new Error("LLM failed after retries");
 }
 
-// ✅ NEW: call Gemini vision API from server side
-// Used for page-check (screenshot of page) and read-upload (user-uploaded file)
 async function callGemini(geminiKey, parts, maxTokens = 500) {
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -164,66 +295,164 @@ async function callGemini(geminiKey, parts, maxTokens = 500) {
       })
     }
   );
+
   const data = await response.json();
+  if (!response.ok) {
+    throw new Error(`Gemini HTTP ${response.status}: ${JSON.stringify(data).slice(0, 300)}`);
+  }
   if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) return null;
   return data.candidates[0].content.parts.filter(p => p.text).map(p => p.text).join(" ").trim();
 }
 
-// ----------------------------------------------------
-// /chat — intent detection + clarification
-// ✅ UPDATED: uses NORMAN_IDENTITY, greets user by name
-// ----------------------------------------------------
+app.post("/translate", async (req, res) => {
+  try {
+    const {
+      text,
+      sourceLang = "auto",
+      targetLang = "en",
+      mode = "voice"
+    } = req.body || {};
+
+    if (!text || !String(text).trim()) {
+      return res.status(400).json({ error: "Missing text" });
+    }
+
+    const cleanText = String(text).trim();
+    const detectedLang = sourceLang === "auto" ? detectInputLanguage(cleanText) : sourceLang;
+
+    if (detectedLang === "en") {
+      console.log(`[TRANSLATE][${mode}] en->${targetLang} (passthrough)`);
+      console.log("[TRANSLATE][ORIGINAL]", cleanText);
+      console.log("[TRANSLATE][ENGLISH]", cleanText);
+      return res.json({
+        translatedText: cleanText,
+        sourceLang: "en",
+        targetLang,
+        provider: "passthrough"
+      });
+    }
+
+    const prompt = `Translate the following user request into natural English.
+
+Rules:
+- Source language may be Kannada or Kannada-English mixed text.
+- Preserve intent, city names, dates, counts, and travel details accurately.
+- If the text is already English, return it unchanged.
+- Return ONLY JSON in this shape: {"translatedText":"..."}
+
+Text: ${cleanText}`;
+
+    let translatedText = cleanText;
+    let provider = "passthrough";
+
+    if (GEMINI_API_KEY) {
+      try {
+        const geminiResponse = await callGemini(GEMINI_API_KEY, [{ text: prompt }], 80);
+        if (geminiResponse) {
+          try {
+            translatedText = cleanTranslatedText(parseModelJson(geminiResponse)?.translatedText || geminiResponse);
+          } catch {
+            translatedText = cleanTranslatedText(geminiResponse);
+          }
+          provider = "gemini";
+        }
+      } catch (geminiErr) {
+        console.warn("[TRANSLATE] Gemini translation failed, falling back:", geminiErr.message);
+      }
+    }
+
+    if ((!translationLooksUsable(cleanText, translatedText)) && GROQ_API_KEY) {
+      const data = await callLLM([
+        { role: "system", content: "You are a translation engine. Return ONLY valid JSON: {\"translatedText\":\"...\"}" },
+        { role: "user", content: prompt }
+      ], { maxTokens: 100 });
+
+      if (!data?.rateLimited && data?.choices?.[0]?.message?.content) {
+        try {
+          translatedText = cleanTranslatedText(parseModelJson(data.choices[0].message.content)?.translatedText || data.choices[0].message.content);
+        } catch {
+          translatedText = cleanTranslatedText(data.choices[0].message.content);
+        }
+        provider = "groq";
+      }
+    }
+
+    if (!translationLooksUsable(cleanText, translatedText)) {
+      console.warn("[TRANSLATE] usable English translation not produced");
+      translatedText = "";
+      provider = "failed";
+    }
+
+    console.log(`[TRANSLATE][${mode}] ${detectedLang}->${targetLang}`);
+    console.log("[TRANSLATE][ORIGINAL]", cleanText);
+    console.log("[TRANSLATE][ENGLISH]", translatedText || "(translation failed)");
+
+    return res.json({
+      translatedText,
+      sourceLang: detectedLang,
+      targetLang,
+      provider,
+      success: Boolean(translatedText)
+    });
+  } catch (err) {
+    console.error("TRANSLATE ERROR:", err);
+    if (err?.stack) console.error(err.stack);
+    return res.status(500).json({ error: "Translation failed" });
+  }
+});
+
 app.post("/chat", async (req, res) => {
+  const fallbackMessage = req.body?.message || "";
+
   try {
     const { message, conversationHistory, userName } = req.body;
     if (!message) return res.status(400).json({ error: "Missing message" });
 
     const historyText = buildHistoryText(conversationHistory);
-    const nameNote = userName ? `The user's name is ${userName}. Address them personally when natural.` : "";
+    const nameNote = userName ? `The user's name is ${userName}.` : "";
 
     const prompt = `${nameNote}
+${historyText ? `Recent context:\n${historyText}\n` : ""}Latest user message: "${message}"
 
-${historyText ? `Conversation so far:\n${historyText}\n` : ""}Latest user message: "${message}"
+Choose one:
+- ready = clear task with enough info
+- clarify = missing key detail like date/location/count
+- refine = user updates an active task from recent context
 
-Your job is to decide what to do next:
-
-CASE 1 — Task is CLEAR and has enough info:
-→ Return type "ready" with a complete merged goal
-
-CASE 2 — Task is INCOMPLETE (missing location, date, details, etc.):
-→ Return type "clarify" and ask ONE short friendly question
-→ Do NOT generate a plan yet
-
-CASE 3 — User is REFINING or UPDATING a previous task:
-→ Merge old context + new info
-→ Return type "refine" with updated merged goal
-
-Return ONLY valid JSON. No markdown. No explanation.
-
-Example outputs:
-{"type":"ready","text":"Great — let me plan this for you!","mergedGoal":"book a hotel in Mumbai under 5000"}
-{"type":"clarify","text":"Sure — which city do you want to book the hotel in?","mergedGoal":null}
-{"type":"refine","text":"Got it — updating the plan with your budget!","mergedGoal":"book a hotel in Mumbai under 5000"}`;
+Return ONLY JSON:
+{"type":"ready|clarify|refine","text":"short reply","mergedGoal":"full goal or null"}`;
 
     const data = await callLLM([
       { role: "system", content: `${NORMAN_IDENTITY}\n\nReturn ONLY JSON.` },
       { role: "user", content: prompt }
-    ]);
+    ], { maxTokens: 180 });
 
-    if (!data.choices || !data.choices[0]) return res.json({ type: "ready", text: "Let me help you with that.", mergedGoal: message });
-    let text = data.choices[0].message.content.trim().replace(/```json/g, "").replace(/```/g, "").trim();
-    try { const parsed = JSON.parse(text); res.json(parsed); }
-    catch { res.json({ type: "ready", text: "Let me plan that for you.", mergedGoal: message }); }
+    if (data?.rateLimited) {
+      return res.json({
+        type: "ready",
+        text: data.userMessage,
+        mergedGoal: message
+      });
+    }
+
+    if (!data?.choices?.[0]) {
+      return res.json({ type: "ready", text: "Let me help you with that.", mergedGoal: message });
+    }
+
+    try {
+      const parsed = parseModelJson(data.choices[0].message.content);
+      return res.json(parsed);
+    } catch (parseErr) {
+      console.warn("CHAT JSON PARSE FAILED:", parseErr, data.choices[0].message.content);
+      return res.json({ type: "ready", text: "Let me plan that for you.", mergedGoal: message });
+    }
   } catch (err) {
     console.error("CHAT ERROR:", err);
-    res.json({ type: "ready", text: "Let me help you with that.", mergedGoal: message });
+    if (err?.stack) console.error(err.stack);
+    return res.json({ type: "ready", text: "Let me help you with that.", mergedGoal: fallbackMessage });
   }
 });
 
-// ----------------------------------------------------
-// /plan — generate execution plan
-// ✅ UPDATED: uses NORMAN_IDENTITY in system prompt
-// ----------------------------------------------------
 app.post("/plan", async (req, res) => {
   try {
     const { goal, pageContext, conversationHistory, richSnapshot, savedFeedback, siteInfo, intent } = req.body;
@@ -235,153 +464,112 @@ app.post("/plan", async (req, res) => {
     const travelMode = intent?.entities?.travelMode || "unspecified";
 
     let snapshotText = "";
-    if (richSnapshot && richSnapshot.confirmedFields && richSnapshot.confirmedFields.length > 0) {
-      const fieldLines = richSnapshot.confirmedFields.map(f =>
-        `  - ${f.fieldName} (${f.role}, tag:${f.tag || "?"}, inputType:${f.inputType || "?"}, label:"${f.resolvedLabel || f.ariaLabel || f.placeholder || ""}")`
+    if (richSnapshot?.confirmedFields?.length) {
+      const fieldLines = richSnapshot.confirmedFields.slice(0, 8).map(f =>
+        `- ${f.fieldName} (${f.role}, ${f.inputType || "?"}, "${f.resolvedLabel || f.ariaLabel || f.placeholder || ""}")`
       ).join("\n");
-      snapshotText = `\nDetected page fields:\n${fieldLines}`;
-      if (richSnapshot.missingFields && richSnapshot.missingFields.length > 0) {
-        snapshotText += `\nFields NOT found in DOM: ${richSnapshot.missingFields.join(", ")}`;
+      snapshotText = `\nDetected fields:\n${fieldLines}`;
+      if (richSnapshot.missingFields?.length) {
+        snapshotText += `\nMissing fields: ${richSnapshot.missingFields.slice(0, 6).join(", ")}`;
       }
     }
 
     let feedbackText = "";
     if (savedFeedback && Object.keys(savedFeedback).length > 0) {
-      const lines = Object.entries(savedFeedback).map(([k, v]) => `  - ${k}: "${v.userDescription || ""}"`).join("\n");
-      feedbackText = `\nUser has previously identified these fields:\n${lines}`;
+      const lines = Object.entries(savedFeedback)
+        .slice(0, 6)
+        .map(([k, v]) => `- ${k}: "${String(v.userDescription || "").slice(0, 50)}"`)
+        .join("\n");
+      feedbackText = `\nKnown user field hints:\n${lines}`;
     }
 
-    const siteContextText = `
-Current website context:
+    const prompt = `${historyText ? `Conversation:\n${historyText}\n` : ""}Goal: ${goal}
+
+Website:
 - siteType: ${siteType}
 - url: ${siteInfo?.url || "unknown"}
 - hostHint: ${siteInfo?.hostHint || "none"}
 - userTravelMode: ${travelMode}
-`;
 
-    const prompt = `${historyText ? `Conversation context:\n${historyText}\n` : ""}
-User goal:
-${goal}
-
-${siteContextText}
-
-Page elements:
+Page context:
 ${JSON.stringify(cleanContext)}${snapshotText}${feedbackText}
 
-Generate steps for interacting with this webpage.
-
-IMPORTANT RULES:
-
-Use ONLY these target names:
-origin, destination, date, return_date, passengers, search
-
-Use ONLY these action types:
-
-"search_select"  → city, airport, station, hotel, location fields that show autocomplete dropdown
-"click_date"     → departure date, return date, check-in, check-out, travel date fields (calendar pickers)
-"type"           → plain text inputs only (name, email, promo code, simple text fields)
-"click"          → buttons (Search, Submit, Book, etc.)
-
-CRITICAL RULES FOR BOOKING SITES:
-- ALWAYS use "search_select" for: origin, destination, from, to, city, airport, station
-- ALWAYS use "click_date" for: departure date, return date, check-in, check-out, travel date
-- NEVER use "type" for city/location or date fields on booking sites
-- Do NOT use HTML ids, DOM selectors, or element names
-- If "Detected page fields" are listed above, use their inputType to choose the correct action
-
-TRAVEL DOMAIN RULES:
-- Match the plan to the current website type.
-- If siteType is "train_booking", plan for train journeys only. Use station-style semantics, not airports or flights.
-- If siteType is "flight_booking", plan for flights only. Use airport/city travel semantics, not trains or taxis.
-- If siteType is "ride_hailing", plan for taxi/cab rides only. Map pickup to target "origin", drop to target "destination", and time/when to target "date".
-- If siteType is "bus_booking", plan for bus booking only.
-- If siteType is "hotel_booking", plan for hotels only.
-- If the user's requested travel mode conflicts with the current siteType, return:
-{"error":"site_mismatch","message":"short friendly explanation"}
-
-Return ONLY valid JSON. No markdown. No explanation.
-
-Example for flight booking:
+Return ONLY valid JSON with:
 {
   "phases": [{
-    "name": "Fill Flight Details",
+    "name": "Phase name",
     "steps": [
-      {"action": "search_select", "target": "origin", "value": "Delhi"},
-      {"action": "search_select", "target": "destination", "value": "Mumbai"},
-      {"action": "click_date", "target": "date", "value": "15 Apr 2026"},
-      {"action": "click", "target": "search"}
+      {"action":"search_select|click_date|type|click","target":"origin|destination|date|return_date|passengers|search","value":"..."}
     ]
   }]
 }
 
-Example for taxi booking on a ride-hailing site:
-{
-  "phases": [{
-    "name": "Fill Ride Details",
-    "steps": [
-      {"action": "search_select", "target": "origin", "value": "Sarjapur"},
-      {"action": "search_select", "target": "destination", "value": "Basavanagudi"},
-      {"action": "click_date", "target": "date", "value": "12 Apr 2025 10:30 AM"},
-      {"action": "click", "target": "search"}
-    ]
-  }]
-}`;
+Rules:
+- use search_select for city/location fields
+- use click_date for any travel/checkin/checkout date field
+- use type only for plain text fields
+- use click for buttons
+- never use selectors or DOM ids
+- if travel mode conflicts with siteType, return {"error":"site_mismatch","message":"short explanation"}`;
 
     const data = await callLLM([
       { role: "system", content: `${NORMAN_IDENTITY}\n\nYou are an AI web automation planner. Return ONLY JSON.` },
       { role: "user", content: prompt }
-    ]);
+    ], { maxTokens: 420 });
 
-    if (!data.choices || !data.choices[0]) return res.json({ error: "Invalid response from LLM", raw: data });
-    let text = data.choices[0].message.content.replace(/```json/g, "").replace(/```/g, "").trim();
+    if (data?.rateLimited) {
+      return res.json({ error: "rate_limit", message: data.userMessage });
+    }
+
+    if (!data?.choices?.[0]) {
+      return res.json({ error: "Invalid response from LLM", raw: data });
+    }
+
     let plan;
-    try { plan = JSON.parse(text); } catch (err) { return res.json({ error: "Model returned invalid JSON", raw: text }); }
+    try {
+      plan = parseModelJson(data.choices[0].message.content);
+    } catch (err) {
+      return res.json({ error: "Model returned invalid JSON", raw: data.choices[0].message.content });
+    }
+
     plan = normalizePlanShape(plan);
-    res.json(plan);
+    return res.json(plan);
   } catch (err) {
     console.error("SERVER ERROR:", err);
-    res.status(500).json({ error: "Planner failed" });
+    if (err?.stack) console.error(err.stack);
+    return res.status(500).json({ error: "Planner failed" });
   }
 });
 
-// ----------------------------------------------------
-// /explain — step explanation
-// ✅ UPDATED: uses NORMAN_IDENTITY
-// ----------------------------------------------------
 app.post("/explain", async (req, res) => {
   try {
     const { step } = req.body;
     if (!step) return res.status(400).json({ error: "Missing step" });
-    const prompt = `Given this step:
+
+    const prompt = `Step:
 Action: ${step.action}
 Target: ${step.target}
 Value: ${step.value || ""}
 
-Write ONE short, friendly sentence (max 15 words) that tells the user what to do and why.
-
-Examples:
-- "Go ahead and click Search — this will fetch available flights for you."
-- "Type your departure city here so we can find the right routes."
-- "Select your travel date to see available options."
-
-Return ONLY the sentence. No JSON. No extra text.`;
+Write ONE short friendly sentence (max 15 words). Return only the sentence.`;
 
     const data = await callLLM([
       { role: "system", content: `${NORMAN_IDENTITY}\n\nReturn only one sentence.` },
       { role: "user", content: prompt }
-    ]);
-    if (!data.choices || !data.choices[0]) return res.json({ explanation: "Follow the highlighted step to continue." });
-    res.json({ explanation: data.choices[0].message.content.trim() });
+    ], { maxTokens: 40 });
+
+    if (data?.rateLimited || !data?.choices?.[0]) {
+      return res.json({ explanation: "Follow the highlighted step to continue." });
+    }
+
+    return res.json({ explanation: data.choices[0].message.content.trim() });
   } catch (err) {
     console.error("EXPLAIN ERROR:", err);
-    res.status(500).json({ explanation: "Follow the highlighted step to continue." });
+    if (err?.stack) console.error(err.stack);
+    return res.status(500).json({ explanation: "Follow the highlighted step to continue." });
   }
 });
 
-// ----------------------------------------------------
-// /feedback-plan — manual instruction when field not found
-// ✅ UPDATED: uses NORMAN_IDENTITY
-// ----------------------------------------------------
 app.post("/feedback-plan", async (req, res) => {
   try {
     const { goal, failedStep, userDescription, richSnapshot, savedFeedback } = req.body;
@@ -398,100 +586,72 @@ app.post("/feedback-plan", async (req, res) => {
       ? Object.entries(savedFeedback).map(([field, data]) => `${field}: "${data.userDescription}"`).join(", ")
       : "";
 
-    const prompt = `User goal: "${goal || "complete this web task"}"
+    const prompt = `Goal: "${goal || "complete this task"}"
+Missing field: ${failedStep.target}
+Action: ${failedStep.action}
+Value: ${failedStep.value || "unknown"}
+User description: "${userDescription || "not described"}"
+Snapshot: ${JSON.stringify(snapshotSummary)}
+${feedbackSummary ? `Known fields: ${feedbackSummary}` : ""}
 
-Norman cannot find this field on the page:
-- Field: ${failedStep.target}
-- Action: ${failedStep.action}
-- Value to fill: ${failedStep.value || "unknown"}
-
-User described it as: "${userDescription || "not described"}"
-Page snapshot: ${JSON.stringify(snapshotSummary)}
-${feedbackSummary ? `Other known fields: ${feedbackSummary}` : ""}
-
-Write ONE short friendly message (under 25 words) telling the user:
-1. Norman couldn't find the field to highlight it
-2. Exactly what value they need to fill in
-3. Where to find it based on their description
-
-Return ONLY the message text. No JSON. No extra text.`;
+Write ONE short friendly instruction under 25 words. Return only the message.`;
 
     const data = await callLLM([
       { role: "system", content: `${NORMAN_IDENTITY}\n\nReturn only one short message.` },
       { role: "user", content: prompt }
-    ]);
+    ], { maxTokens: 60 });
 
-    if (!data.choices || !data.choices[0]) {
+    if (data?.rateLimited || !data?.choices?.[0]) {
       const fallback = failedStep.value
-        ? `I couldn't find the field to highlight. Please fill in "${failedStep.value}" in the ${failedStep.target} field manually.`
-        : `I couldn't find the ${failedStep.target} field. Please locate it and fill it in manually.`;
+        ? `I couldn't find the field. Please fill in "${failedStep.value}" manually.`
+        : `I couldn't find the ${failedStep.target} field. Please fill it in manually.`;
       return res.json({ instruction: fallback });
     }
-    res.json({ instruction: data.choices[0].message.content.trim() });
+
+    return res.json({ instruction: data.choices[0].message.content.trim() });
   } catch (err) {
     console.error("FEEDBACK PLAN ERROR:", err);
+    if (err?.stack) console.error(err.stack);
     const fallback = req.body?.failedStep?.value
       ? `I couldn't find the field. Please fill in "${req.body.failedStep.value}" manually.`
       : "I couldn't find that field. Please fill it in manually.";
-    res.status(500).json({ instruction: fallback });
+    return res.status(500).json({ instruction: fallback });
   }
 });
 
-// ----------------------------------------------------
-// ✅ NEW: /page-check
-// Gemini analyses current page screenshot + user goal
-// Returns: canComplete (bool), reason, suggestedSite (if not)
-// Called by the extension before planning, when Gemini key is available
-// ----------------------------------------------------
 app.post("/page-check", async (req, res) => {
   try {
     const { goal, pageUrl, pageTitle, geminiKey } = req.body;
 
     if (!geminiKey) {
-      // no Gemini key — skip check, proceed with planning
-      return res.json({ canComplete: true, reason: "No Gemini key — skipping page check.", suggestedSite: null });
+      return res.json({ canComplete: true, reason: "No Gemini key - skipping page check.", suggestedSite: null });
     }
-
     if (!goal) return res.status(400).json({ error: "Missing goal" });
 
-    const prompt = `The user wants to: "${goal}"
+    const prompt = `Goal: "${goal}"
+Page: ${pageTitle || "unknown"} (${pageUrl || "unknown URL"})
 
-They are currently on: ${pageTitle || "unknown page"} (${pageUrl || "unknown URL"})
+Return ONLY JSON:
+{"canComplete":true,"reason":"short reason","suggestedSite":null}`;
 
-Based only on the URL and page title, answer:
-1. Can this website realistically complete the user's goal? (yes/no)
-2. If no, what is ONE better website they should use instead? Give just the domain name (e.g. "booking.com").
-3. Give a one-sentence reason.
+    const geminiResponse = await callGemini(geminiKey, [{ text: prompt }], 120);
 
-Return ONLY valid JSON like this:
-{"canComplete": true, "reason": "This is a flight booking site.", "suggestedSite": null}
-or
-{"canComplete": false, "reason": "Wikipedia is for reading, not booking.", "suggestedSite": "booking.com"}`;
-
-    const parts = [{ text: prompt }];
-    const geminiResponse = await callGemini(geminiKey, parts, 200);
-
-    if (!geminiResponse) return res.json({ canComplete: true, reason: "Page check inconclusive.", suggestedSite: null });
+    if (!geminiResponse) {
+      return res.json({ canComplete: true, reason: "Page check inconclusive.", suggestedSite: null });
+    }
 
     try {
-      const clean = geminiResponse.replace(/```json/g, "").replace(/```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      res.json(parsed);
+      return res.json(parseModelJson(geminiResponse));
     } catch {
-      res.json({ canComplete: true, reason: geminiResponse, suggestedSite: null });
+      return res.json({ canComplete: true, reason: geminiResponse, suggestedSite: null });
     }
   } catch (err) {
     console.error("PAGE CHECK ERROR:", err);
-    res.json({ canComplete: true, reason: "Page check failed — proceeding anyway.", suggestedSite: null });
+    if (err?.stack) console.error(err.stack);
+    return res.json({ canComplete: true, reason: "Page check failed - proceeding anyway.", suggestedSite: null });
   }
 });
 
-// ----------------------------------------------------
-// ✅ NEW: /read-upload
-// Gemini reads a user-uploaded image or PDF (base64)
-// Extracts structured data relevant to filling a form
-// Returns extracted fields that the extension will use to fill the page
-// ----------------------------------------------------
 app.post("/read-upload", async (req, res) => {
   try {
     const { base64, mediaType, fileName, pageUrl, pageTitle, geminiKey } = req.body;
@@ -499,85 +659,45 @@ app.post("/read-upload", async (req, res) => {
     if (!geminiKey) {
       return res.status(400).json({
         error: "no_key",
-        message: "Add a Gemini API key in ⋮ Settings to enable document reading."
+        message: "Add a Gemini API key in Settings to enable document reading."
       });
     }
-
     if (!base64) return res.status(400).json({ error: "Missing file data" });
 
     const isPdf = mediaType === "application/pdf";
+    const prompt = `The user uploaded a ${isPdf ? "PDF" : "image"} named "${fileName || "file"}".
+They are on: ${pageTitle || "unknown"} (${pageUrl || "unknown URL"}).
 
-    const prompt = `The user has uploaded a ${isPdf ? "PDF document" : "screenshot/image"} named "${fileName || "file"}".
-They are on the page: ${pageTitle || "unknown"} (${pageUrl || "unknown URL"}).
+Extract form-relevant data.
+Return ONLY JSON:
+{"extractedFields":[{"fieldName":"origin","value":"Delhi"}],"summary":"short summary"}`;
 
-Extract ALL information from this ${isPdf ? "document" : "image"} that could be used to fill a web form.
-Look for: names, dates, locations, cities, booking references, phone numbers, email addresses, passenger counts, prices, addresses, flight numbers, hotel names, or any other structured data.
-
-Return ONLY valid JSON in this format:
-{
-  "extractedFields": [
-    {"fieldName": "origin", "value": "Delhi"},
-    {"fieldName": "destination", "value": "Mumbai"},
-    {"fieldName": "date", "value": "15 Apr 2026"},
-    {"fieldName": "passengers", "value": "2"},
-    {"fieldName": "name", "value": "John Smith"}
-  ],
-  "summary": "One sentence describing what the document contains."
-}
-
-If nothing useful is found, return: {"extractedFields": [], "summary": "No form-relevant data found."}
-Return ONLY the JSON. No markdown. No explanation.`;
-
-    const parts = [
+    const geminiResponse = await callGemini(geminiKey, [
       { inline_data: { mime_type: mediaType || "image/png", data: base64 } },
       { text: prompt }
-    ];
-
-    const geminiResponse = await callGemini(geminiKey, parts, 600);
+    ], 400);
 
     if (!geminiResponse) {
       return res.json({ extractedFields: [], summary: "Could not read the file." });
     }
 
     try {
-      const clean = geminiResponse.replace(/```json/g, "").replace(/```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      res.json(parsed);
+      return res.json(parseModelJson(geminiResponse));
     } catch {
-      res.json({ extractedFields: [], summary: geminiResponse });
+      return res.json({ extractedFields: [], summary: geminiResponse });
     }
   } catch (err) {
     console.error("READ UPLOAD ERROR:", err);
-    res.status(500).json({ extractedFields: [], summary: "Failed to read the file." });
+    if (err?.stack) console.error(err.stack);
+    return res.status(500).json({ extractedFields: [], summary: "Failed to read the file." });
   }
 });
 
-// ----------------------------------------------------
-// ✅ NEW: /groq-plan
-// Groq is the DEFAULT planning engine — no user key needed.
-// This is a named alias for /plan so the client can explicitly
-// route planning through Groq (AI_ENGINES.GROQ.role === "planning").
-// Behaviour is identical to /plan; both use callLLM (Groq under the hood).
-// Gemini is NEVER called here — planning is Groq-only.
-// ----------------------------------------------------
 app.post("/groq-plan", async (req, res) => {
-  // Delegate entirely to the existing /plan logic
   req.url = "/plan";
   app._router.handle(req, res, () => {});
 });
 
-// ----------------------------------------------------
-// ✅ NEW: /gemini-vision-field
-// Gemini vision engine — ONLY called when:
-//   1. A DOM element was NOT found by the normal matcher
-//   2. The user has a Gemini key saved
-//   3. The user has uploaded a screenshot of the current page
-// Returns CSS selector hints, aria-label, visual description,
-// position clue, and nearby text so the extension can retry
-// the DOM search intelligently without asking the user again.
-// The screenshot is used for this one call only — never stored.
-// Groq is NEVER called here — vision is Gemini-only.
-// ----------------------------------------------------
 app.post("/gemini-vision-field", async (req, res) => {
   try {
     const { fieldName, imageBase64, mediaType, geminiKey, pageUrl, pageTitle } = req.body;
@@ -588,55 +708,48 @@ app.post("/gemini-vision-field", async (req, res) => {
         message: "A Gemini API key is required for visual field detection."
       });
     }
-
     if (!fieldName || !imageBase64) {
       return res.status(400).json({ error: "Missing fieldName or imageBase64" });
     }
 
-    const prompt = `You are helping a browser automation system find a specific DOM element on a webpage.
-
-The field it cannot find is: "${fieldName}"
+    const prompt = `Find the field "${fieldName}" on this page screenshot.
 Page: ${pageTitle || "unknown"} (${pageUrl || "unknown URL"})
 
-Look at the screenshot carefully and return hints that will help find this element in the DOM.
-
-Return ONLY valid JSON with these fields (fill in what you can see, use null if unsure):
+Return ONLY JSON:
 {
-  "cssSelector": "a CSS selector guess e.g. input[placeholder='From'], [aria-label='Origin city'], #departureCity",
-  "ariaLabel": "the aria-label text of the element if visible",
-  "placeholderText": "placeholder text inside the input if visible",
-  "visualDescription": "2-sentence description: color, shape, position on page",
-  "positionClue": "IMPORTANT: describe using direction words — e.g. right side from To field, left of search button, below departure date, top right corner. Always include a direction word AND a nearby reference element.",
-  "nearbyText": "exact text of the label or text immediately next to this element",
-  "elementType": "input | button | select | div | combobox | other",
-  "structuralRole": "What type of UI widget is this? Choose from: date_picker | calendar_trigger | search_select | counter | dropdown | text_input | button | checkbox | radio | UNKNOWN. A calendar_trigger is a readonly input or div that opens a date picker when clicked. A search_select is an autocomplete/combobox. A counter has +/- buttons. Use this to tell the system HOW this element behaves, not just what it looks like."
-}
+  "cssSelector": null,
+  "ariaLabel": null,
+  "placeholderText": null,
+  "visualDescription": "short description",
+  "positionClue": "short position clue",
+  "nearbyText": null,
+  "elementType": "input|button|select|div|combobox|other",
+  "structuralRole": "date_picker|calendar_trigger|search_select|counter|dropdown|text_input|button|checkbox|radio|UNKNOWN"
+}`;
 
-Return ONLY the JSON. No markdown. No explanation.`;
-
-    const parts = [
+    const geminiResponse = await callGemini(geminiKey, [
       { inline_data: { mime_type: mediaType || "image/png", data: imageBase64 } },
       { text: prompt }
-    ];
-
-    const geminiResponse = await callGemini(geminiKey, parts, 400);
+    ], 250);
 
     if (!geminiResponse) {
       return res.json({ hints: null, message: "Gemini could not analyse the screenshot." });
     }
 
     try {
-      const clean = geminiResponse.replace(/```json/g, "").replace(/```/g, "").trim();
-      const hints = JSON.parse(clean);
-      res.json({ hints });
+      return res.json({ hints: parseModelJson(geminiResponse) });
     } catch {
-      // Gemini returned text instead of JSON — still useful as a visual description
-      res.json({ hints: { visualDescription: geminiResponse, cssSelector: null, ariaLabel: null, nearbyText: null } });
+      return res.json({
+        hints: { visualDescription: geminiResponse, cssSelector: null, ariaLabel: null, nearbyText: null }
+      });
     }
   } catch (err) {
     console.error("GEMINI VISION FIELD ERROR:", err);
-    res.status(500).json({ hints: null, message: "Vision field detection failed." });
+    if (err?.stack) console.error(err.stack);
+    return res.status(500).json({ hints: null, message: "Vision field detection failed." });
   }
 });
 
-app.listen(PORT, () => { console.log(`Planner server running on port ${PORT}`); });
+app.listen(PORT, () => {
+  console.log(`Planner server running on port ${PORT}`);
+});
