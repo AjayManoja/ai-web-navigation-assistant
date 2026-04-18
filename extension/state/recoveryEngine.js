@@ -1,7 +1,6 @@
 // ----------------------------------------------------
 // STEP FAILURE RECOVERY
 // ----------------------------------------------------
-
 function handleStepFailure(step){
 
 console.warn("[RECOVERY] step failed:", step)
@@ -21,7 +20,6 @@ console.error("[RECOVERY] max retries reached")
 return "abort"
 
 }
-
 
 // ----------------------------------------------------
 // PAGE NAVIGATION DETECTION
@@ -46,11 +44,5 @@ return true
 return false
 
 }
-
-
-// ----------------------------------------------------
-// GLOBAL EXPORT
-// ----------------------------------------------------
-
 window.handleStepFailure = handleStepFailure
 window.detectPageChange = detectPageChange
