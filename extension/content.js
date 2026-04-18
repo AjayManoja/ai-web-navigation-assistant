@@ -16,7 +16,7 @@ if(document.readyState === "loading"){
 
 
 // ------------------------------------
-// ✅ NEW: ASK NORMAN (chat endpoint)
+// NEW: ASK NORMAN (chat endpoint)
 // Decides: clarify / ready / refine
 // ------------------------------------
 
@@ -44,25 +44,25 @@ let planning = false;
 
 
 // ------------------------------------
-// ✅ UPDATED: MAIN INPUT HANDLER
+// UPDATED: MAIN INPUT HANDLER
 // Now handles multi-turn + interrupt
 // ------------------------------------
 
 listenUserInput(async (query) => {
 
-  // ✅ Step 1: Save user message to conversation history
+  // Step 1: Save user message to conversation history
   if (window.sessionManager) {
     window.sessionManager.addToHistory("user", query);
   }
 
-  // ✅ Step 2: If execution is running → interrupt and refine
+  //Step 2: If execution is running → interrupt and refine
   if (executionRunning) {
     console.log("[INTERRUPT] New input received during execution");
     interruptExecution();
     addMessage("AI", "Got it — updating the plan with your new input...");
   }
 
-  // ✅ Step 3: Prevent overlapping planner calls
+  // Step 3: Prevent overlapping planner calls
   if (planning) {
     console.log("Planner already running...");
     return;
@@ -72,10 +72,10 @@ listenUserInput(async (query) => {
 
   try {
 
-    // ✅ Step 4: Get conversation history
+    // Step 4: Get conversation history
     const conversationHistory = window.sessionManager?.getHistory() || [];
 
-    // ✅ Step 5: Ask Norman what to do (clarify / ready / refine)
+    // Step 5: Ask Norman what to do (clarify / ready / refine)
     const chatResponse = await askNorman(query, conversationHistory);
 
     console.log("NORMAN RESPONSE:", chatResponse);
@@ -85,27 +85,27 @@ listenUserInput(async (query) => {
       return;
     }
 
-    // ✅ Step 6: Save Norman's response to history
+    // Step 6: Save Norman's response to history
     if (window.sessionManager && chatResponse.text) {
       window.sessionManager.addToHistory("assistant", chatResponse.text);
     }
 
-    // ✅ Step 7: If Norman needs clarification → show question and STOP
+    // Step 7: If Norman needs clarification → show question and STOP
     if (chatResponse.type === "clarify") {
       addMessage("AI", chatResponse.text);
       return;
     }
 
-    // ✅ Step 8: Use merged goal for planning
+    // Step 8: Use merged goal for planning
     const mergedGoal = chatResponse.mergedGoal || query;
 
-    // ✅ Step 9: Update session with merged goal
+    // Step 9: Update session with merged goal
     if (window.sessionManager) {
       window.sessionManager.start(mergedGoal); // resets plan, keeps history
       window.sessionManager.updateGoal(mergedGoal);
     }
 
-    // ✅ Step 10: Check if site supports this task
+    // Step 10: Check if site supports this task
     const siteInfo = classifyWebsite();
     const intent = parseIntent(mergedGoal);
     const capability = analyzeCapability(intent, siteInfo);
@@ -115,12 +115,12 @@ listenUserInput(async (query) => {
       return;
     }
 
-    // ✅ Step 11: Show Norman's ready message
+    // Step 11: Show Norman's ready message
     if (chatResponse.text) {
       addMessage("AI", chatResponse.text);
     }
 
-    // ✅ Step 12: Generate plan with merged goal + conversation context
+    // Step 12: Generate plan with merged goal + conversation context
     const pageContext = extractPageContext();
     const plan = await requestPlan(mergedGoal, pageContext, conversationHistory);
 
@@ -132,14 +132,14 @@ listenUserInput(async (query) => {
       return;
     }
 
-    // ✅ Step 13: Execute
+    // Step 13: Execute
     startExecution(plan);
 
   } catch(err) {
     console.error("Planner request failed:", err);
     addMessage("AI", "Planner failed. Please try again.");
   } finally {
-    // ✅ FIXED: always release the lock — no matter which path exits
+    // FIXED: always release the lock — no matter which path exits
     planning = false;
   }
 
