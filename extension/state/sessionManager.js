@@ -4,9 +4,6 @@
       this.key = "agent_session";
       this.fieldMemoryKey = "norman_field_memory";
       this.session = this.load() || this.createEmpty();
-      // Per-session rejection blacklist — elements rejected by the user this session.
-      // Stored as a Set of CSS selectors / element references.
-      // Cleared on start() so each new task gets a clean slate.
       this._rejectedElements = new Set();
       // Per-session score weight adjustments — { fieldKey → multiplier }
       // Increases after each user correction so the right signal wins faster.
@@ -58,7 +55,6 @@
       this.save();
     }
 
-    // ✅ add message to conversation history
     addToHistory(role, text) {
       if (!this.session.conversationHistory) {
         this.session.conversationHistory = [];
@@ -75,19 +71,19 @@
       this.save();
     }
 
-    // ✅ get full conversation history
+    //get full conversation history
     getHistory() {
       return this.session.conversationHistory || [];
     }
 
-    // ✅ update merged/refined goal
+    //update merged/refined goal
     updateGoal(goal) {
       this.session.goal = goal;
       this.session.mergedGoal = goal;
       this.save();
     }
 
-    // ✅ interrupt current execution for plan update
+    // interrupt current execution for plan update
     interrupt() {
       this.session.status = "interrupted";
       this.session.currentPhase = 0;
@@ -125,7 +121,7 @@
       localStorage.removeItem(this.key);
       this.session = this.createEmpty();
 
-      // ✅ FIX 5: clear all per-session state so stale memory never bleeds across tasks
+      // FIX 5: clear all per-session state so stale memory never bleeds across tasks
       this._rejectedElements = new Set();
       this._scoreWeights = {};
 
@@ -137,7 +133,7 @@
     }
 
     // ============================================
-    // ✅ CHAT HISTORY METHODS (last 5 chats)
+    // CHAT HISTORY METHODS (last 5 chats)
     // Key: norman_chat_history
     // Each entry: { id, title, messages[], timestamp }
     // ============================================
@@ -191,13 +187,13 @@
     }
 
     // ============================================
-    // ✅ NEW: PERSISTENT FIELD MEMORY METHODS
+    // NEW: PERSISTENT FIELD MEMORY METHODS
     // Saves per-domain field knowledge from user
     // Storage: norman_field_memory → { domain → { FIELD → { ... } } }
-    // ✅ FIX 1: migrated from localStorage to chrome.storage.local
+    // FIX 1: migrated from localStorage to chrome.storage.local
     // ============================================
 
-    // ✅ Save a field description + resolved selector for a domain
+    // Save a field description + resolved selector for a domain
     saveFieldMemory(domain, fieldName, userDescription, resolvedSelector) {
       chrome.storage.local.get(this.fieldMemoryKey, (result) => {
         try {
@@ -222,7 +218,7 @@
       });
     }
 
-    // ✅ Get saved field memory for a specific domain + field
+    //Get saved field memory for a specific domain + field
     getFieldMemory(domain, fieldName, callback) {
       chrome.storage.local.get(this.fieldMemoryKey, (result) => {
         try {
@@ -237,7 +233,7 @@
       });
     }
 
-    // ✅ Get all saved field memory for a domain
+    //Get all saved field memory for a domain
     getDomainMemory(domain, callback) {
       chrome.storage.local.get(this.fieldMemoryKey, (result) => {
         try {
@@ -250,7 +246,7 @@
       });
     }
 
-    // ✅ Clear a specific field from memory (used when selector goes stale)
+    // Clear a specific field from memory (used when selector goes stale)
     clearFieldMemory(domain, fieldName) {
       chrome.storage.local.get(this.fieldMemoryKey, (result) => {
         try {
@@ -267,7 +263,7 @@
       });
     }
 
-    // ✅ Clear all field memory for a domain
+    //Clear all field memory for a domain
     clearDomainMemory(domain) {
       chrome.storage.local.get(this.fieldMemoryKey, (result) => {
         try {
@@ -302,7 +298,7 @@
       // Also store the element reference directly for same-session checks
       this._rejectedElements.add(element);
 
-      // ✅ FIX 2: hard flag directly on DOM node — scoring systems can skip instantly
+      // FIX 2: hard flag directly on DOM node — scoring systems can skip instantly
       //    without hitting the Set lookup at all
       try { element.__normanRejected = true; } catch(e) {}
 
@@ -356,13 +352,13 @@
     // ============================================
 
     boostScoreWeight(fieldKey, signalType, amount = 1.5) {
-      // ✅ FIX 3: guard against bad input
+      // FIX 3: guard against bad input
       if (!fieldKey || !signalType) return;
 
       const key = `${fieldKey}:${signalType}`;
       this._scoreWeights[key] = (this._scoreWeights[key] || 1.0) * amount;
 
-      // ✅ FIX 3: clamp to prevent runaway scoring that overpowers correct elements
+      // FIX 3: clamp to prevent runaway scoring that overpowers correct elements
       if (this._scoreWeights[key] > 3.0) {
         this._scoreWeights[key] = 3.0;
       }
@@ -375,7 +371,7 @@
       return this._scoreWeights[key] || 1.0;
     }
 
-    // ✅ FIX 6: debug visibility — call window.sessionManager.getDebugState() in console
+    // FIX 6: debug visibility — call window.sessionManager.getDebugState() in console
     //    to inspect why an element keeps being selected or a weight is imbalanced
     getDebugState() {
       return {
