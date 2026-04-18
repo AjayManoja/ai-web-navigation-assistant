@@ -1,5 +1,3 @@
-// ui/assistantUI.js
-
 // ----------------------------------------------------
 // CHAT HISTORY HELPERS (delegate to sessionManager)
 // ----------------------------------------------------
