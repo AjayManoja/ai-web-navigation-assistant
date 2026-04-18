@@ -11,18 +11,12 @@ const state = {
   pageContext: null,
   chatHistory: [],
 
-  // Phase-6 additions
   pageURL: null,
   retryCount: 0,
   maxRetries: 3,
   lastActionTime: null
 
 };
-
-
-// ----------------------------------------------------
-// STATE HELPERS
-// ----------------------------------------------------
 
 function resetExecution(){
 
