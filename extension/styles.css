@@ -328,7 +328,6 @@
   border-color: rgba(139, 92, 246, 0.32);
 }
 
-/* Plus icon */
 .prompt-icon {
   background: none;
   border: none;
@@ -351,7 +350,7 @@
   background: rgba(139, 92, 246, 0.1);
 }
 
-/* Plus icon (first .prompt-icon) */
+
 .prompt-icon:nth-of-type(1)::after {
   content: '';
   display: block;
