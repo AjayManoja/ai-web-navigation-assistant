@@ -322,5 +322,5 @@ Ideas, bug reports, and pull requests are all welcome! 🎉
 ---
 
 <p align="center">
-  Built with ❤️ by <a href="https://github.com/AjayManoja">Ajay Manoja</a>
+  Built with ❤️ by <a href="https://github.com/AjayManoja">Team Infinity</a>
 </p>
